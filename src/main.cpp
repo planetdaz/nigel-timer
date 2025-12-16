@@ -19,8 +19,8 @@
 
 // ===== CONFIGURATION =====
 // Color thresholds (in seconds)
-const int THRESHOLD_YELLOW = 1800;  // 30 minutes
-const int THRESHOLD_GREEN = 7200;   // 2 hours (120 minutes)
+const int THRESHOLD_YELLOW = 12600;  // 3.5 hours (210 minutes)
+const int THRESHOLD_GREEN = 14400;   // 4 hours (240 minutes)
 
 // Touch debounce delay (in milliseconds)
 const unsigned long TOUCH_DEBOUNCE_MS = 2000;
