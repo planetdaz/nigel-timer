@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <SPI.h>
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <FS.h>
@@ -6,9 +7,15 @@
 #include <Preferences.h>
 
 // ===== PIN DEFINITIONS =====
-// Touch Controller Pins
+// Touch Controller Pins (separate SPI bus from LCD)
 #define TOUCH_CS 33
 #define TOUCH_IRQ 36
+#define TOUCH_CLK 25
+#define TOUCH_DIN 32  // MOSI
+#define TOUCH_DO 39   // MISO
+
+// Backlight
+#define TFT_BACKLIGHT 21
 
 // ===== CONFIGURATION =====
 // Color thresholds (in seconds)
@@ -20,7 +27,11 @@ const unsigned long TOUCH_DEBOUNCE_MS = 2000;
 
 // ===== GLOBAL OBJECTS =====
 TFT_eSPI tft = TFT_eSPI();
+
+// Create separate SPI instance for touch controller
+SPIClass touchSPI(VSPI);
 XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
+
 Preferences preferences;
 
 // ===== STATE VARIABLES =====
@@ -57,28 +68,36 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Nigel's Potty Timer - Starting...");
 
+  // Initialize backlight pin and turn it on
+  pinMode(TFT_BACKLIGHT, OUTPUT);
+  digitalWrite(TFT_BACKLIGHT, HIGH);
+  Serial.println("Backlight ON");
+
   // Initialize display
   tft.init();
   tft.setRotation(0);  // Portrait mode
   tft.fillScreen(COLOR_BLACK);
-  
-  // Initialize touch
-  touch.begin();
+  Serial.println("Display initialized");
+
+  // Initialize touch SPI on custom pins
+  touchSPI.begin(TOUCH_CLK, TOUCH_DO, TOUCH_DIN, TOUCH_CS);
+  touch.begin(touchSPI);
   touch.setRotation(0);
-  
+  Serial.println("Touch initialized");
+
   // Initialize filesystem
   initializeFileSystem();
-  
+
   // Log boot entry
   logEntry("Boot");
-  
+
   // Initialize preferences (for future threshold storage)
   preferences.begin("nigel-timer", false);
   preferences.end();
-  
+
   // Draw initial waiting screen
   drawWaitingScreen();
-  
+
   Serial.println("Ready! Waiting for first touch...");
 }
 
