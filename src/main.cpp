@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
+#include <FS.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 
@@ -134,7 +135,7 @@ void initializeFileSystem() {
 }
 
 void logEntry(const char* message) {
-  File logFile = LittleFS.open("/logs.txt", "a");
+  fs::File logFile = LittleFS.open("/logs.txt", "a");
   if (!logFile) {
     Serial.println("ERROR: Failed to open log file!");
     return;
