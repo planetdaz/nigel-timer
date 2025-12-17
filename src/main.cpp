@@ -23,7 +23,7 @@ const int THRESHOLD_YELLOW = 15; //12600;  // 3.5 hours (210 minutes)
 const int THRESHOLD_GREEN = 25;  //14400;   // 4 hours (240 minutes)
 
 // Touch debounce delay (in milliseconds)
-const unsigned long TOUCH_DEBOUNCE_MS = 2000;
+const unsigned long TOUCH_DEBOUNCE_MS = 1000;
 
 // ===== GLOBAL OBJECTS =====
 TFT_eSPI tft = TFT_eSPI();
