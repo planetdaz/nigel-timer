@@ -34,6 +34,13 @@ XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
 
 Preferences preferences;
 
+// ===== COLOR DEFINITIONS =====
+#define COLOR_RED     0xF800
+#define COLOR_YELLOW  0xFFE0
+#define COLOR_GREEN   0x07E0
+#define COLOR_WHITE   0xFFFF
+#define COLOR_BLACK   0x0000
+
 // ===== STATE VARIABLES =====
 enum TimerState {
   WAITING_TO_START,
@@ -45,18 +52,12 @@ unsigned long timerStartMillis = 0;
 unsigned long lastTouchMillis = 0;
 unsigned long lastUpdateMillis = 0;
 int lastDisplayedSeconds = -1;
-
-// ===== COLOR DEFINITIONS =====
-#define COLOR_RED     0xF800
-#define COLOR_YELLOW  0xFFE0
-#define COLOR_GREEN   0x07E0
-#define COLOR_WHITE   0xFFFF
-#define COLOR_BLACK   0x0000
+uint16_t lastBgColor = COLOR_RED;
 
 // ===== FUNCTION DECLARATIONS =====
 void initializeFileSystem();
 void logEntry(const char* message);
-void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor);
+void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, bool forceFullRedraw = false);
 void drawWaitingScreen();
 void handleTouch();
 unsigned long getElapsedSeconds();
@@ -190,20 +191,28 @@ void drawWaitingScreen() {
   tft.drawString("00:00:00", 160, 170);
 }
 
-void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor) {
-  tft.fillScreen(bgColor);
+void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, bool forceFullRedraw) {
+  // Only redraw full screen if background color changed or forced
+  if (forceFullRedraw || bgColor != lastBgColor) {
+    tft.fillScreen(bgColor);
+    lastBgColor = bgColor;
 
-  // Draw title at top
-  tft.setTextColor(COLOR_WHITE);
-  tft.setTextDatum(TC_DATUM);  // Top center
-  tft.setTextSize(3);
-  tft.drawString("Nigel Timer!", 160, 20);
+    // Draw title at top
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextDatum(TC_DATUM);  // Top center
+    tft.setTextSize(3);
+    tft.drawString("Nigel Timer!", 160, 20);
+  } else {
+    // Just clear the timer area (approximate size of text)
+    tft.fillRect(40, 130, 240, 50, bgColor);
+  }
 
   // Format time string
   char timeStr[16];
   snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
 
   // Draw time below title with whitespace
+  tft.setTextColor(COLOR_WHITE);
   tft.setTextDatum(MC_DATUM);  // Middle center
   tft.setTextSize(4);
   tft.drawString(timeStr, 160, 150);
@@ -218,30 +227,30 @@ void handleTouch() {
     lastUpdateMillis = millis();
     lastDisplayedSeconds = 0;
     
-    // Draw initial running display
-    drawTimerDisplay(0, 0, 0, COLOR_RED);
-    
+    // Draw initial running display (force full redraw)
+    drawTimerDisplay(0, 0, 0, COLOR_RED, true);
+
   } else if (currentState == RUNNING) {
     // Subsequent touch - log duration and reset
     unsigned long elapsedSeconds = getElapsedSeconds();
     int hours, minutes, seconds;
     formatTime(elapsedSeconds, hours, minutes, seconds);
-    
+
     // Log the duration
     char logMessage[64];
     snprintf(logMessage, sizeof(logMessage), "Duration: %02d:%02d:%02d", hours, minutes, seconds);
     logEntry(logMessage);
-    
+
     Serial.print("Timer reset! Previous duration: ");
     Serial.println(logMessage);
-    
+
     // Reset timer
     timerStartMillis = millis();
     lastUpdateMillis = millis();
     lastDisplayedSeconds = 0;
-    
-    // Redraw with red background
-    drawTimerDisplay(0, 0, 0, COLOR_RED);
+
+    // Redraw with red background (force full redraw)
+    drawTimerDisplay(0, 0, 0, COLOR_RED, true);
   }
 }
 
