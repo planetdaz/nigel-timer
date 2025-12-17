@@ -192,13 +192,16 @@ void drawWaitingScreen() {
 }
 
 void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, bool forceFullRedraw) {
+  // Choose text color based on background (black on yellow for readability)
+  uint16_t textColor = (bgColor == COLOR_YELLOW) ? COLOR_BLACK : COLOR_WHITE;
+
   // Only redraw full screen if background color changed or forced
   if (forceFullRedraw || bgColor != lastBgColor) {
     tft.fillScreen(bgColor);
     lastBgColor = bgColor;
 
     // Draw title at top
-    tft.setTextColor(COLOR_WHITE);
+    tft.setTextColor(textColor);
     tft.setTextDatum(TC_DATUM);  // Top center
     tft.setTextSize(3);
     tft.drawString("Nigel Timer!", 160, 20);
@@ -212,7 +215,7 @@ void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, boo
   snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
 
   // Draw time below title with whitespace
-  tft.setTextColor(COLOR_WHITE);
+  tft.setTextColor(textColor);
   tft.setTextDatum(MC_DATUM);  // Middle center
   tft.setTextSize(4);
   tft.drawString(timeStr, 160, 150);
