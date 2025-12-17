@@ -75,14 +75,14 @@ void setup() {
 
   // Initialize display
   tft.init();
-  tft.setRotation(0);  // Portrait mode
+  tft.setRotation(1);  // Landscape mode (320x240)
   tft.fillScreen(COLOR_BLACK);
   Serial.println("Display initialized");
 
   // Initialize touch SPI on custom pins
   touchSPI.begin(TOUCH_CLK, TOUCH_DO, TOUCH_DIN, TOUCH_CS);
   touch.begin(touchSPI);
-  touch.setRotation(0);
+  touch.setRotation(1);  // Match display rotation
   Serial.println("Touch initialized");
 
   // Initialize filesystem
@@ -173,31 +173,40 @@ void logEntry(const char* message) {
 
 void drawWaitingScreen() {
   tft.fillScreen(COLOR_RED);
-  
-  // Draw "Touch to Start" message
+
+  // Draw title at top
   tft.setTextColor(COLOR_WHITE);
-  tft.setTextDatum(MC_DATUM);  // Middle center
+  tft.setTextDatum(TC_DATUM);  // Top center
   tft.setTextSize(3);
-  tft.drawString("Touch to", 120, 100);
-  tft.drawString("Start", 120, 140);
-  
-  // Draw timer at 0:00:00
+  tft.drawString("Nigel Timer!", 160, 20);
+
+  // Draw "Touch to Start" message
+  tft.setTextDatum(MC_DATUM);  // Middle center
+  tft.setTextSize(2);
+  tft.drawString("Touch to Start", 160, 100);
+
+  // Draw timer at 0:00:00 with whitespace above
   tft.setTextSize(4);
-  tft.drawString("00:00:00", 120, 220);
+  tft.drawString("00:00:00", 160, 170);
 }
 
 void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor) {
   tft.fillScreen(bgColor);
-  
+
+  // Draw title at top
+  tft.setTextColor(COLOR_WHITE);
+  tft.setTextDatum(TC_DATUM);  // Top center
+  tft.setTextSize(3);
+  tft.drawString("Nigel Timer!", 160, 20);
+
   // Format time string
   char timeStr[16];
   snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hours, minutes, seconds);
-  
-  // Draw time in large font centered
-  tft.setTextColor(COLOR_WHITE);
+
+  // Draw time below title with whitespace
   tft.setTextDatum(MC_DATUM);  // Middle center
   tft.setTextSize(4);
-  tft.drawString(timeStr, 120, 160);
+  tft.drawString(timeStr, 160, 150);
 }
 
 void handleTouch() {
