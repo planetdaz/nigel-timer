@@ -253,10 +253,9 @@ void drawLogsScreen() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("No logs found", 160, 120);
     // Still draw clear button and footer
-    goto drawButtons;
   }
 
-  {
+  else {
     // Read ALL lines, keeping only the last MAX_DISPLAY in a circular buffer
     const int MAX_DISPLAY = 9;
     String lines[MAX_DISPLAY];
@@ -284,7 +283,6 @@ void drawLogsScreen() {
     }
   }
 
-drawButtons:
   // Clear button (lower left)
   tft.drawRect(CLEAR_BTN_X, CLEAR_BTN_Y, CLEAR_BTN_W, CLEAR_BTN_H, COLOR_RED);
   tft.setTextColor(COLOR_RED);
