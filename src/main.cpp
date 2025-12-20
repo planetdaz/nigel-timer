@@ -49,6 +49,7 @@ enum TimerState {
 };
 
 TimerState currentState = WAITING_TO_START;
+TimerState stateBeforeLogs = WAITING_TO_START;  // Track state to return to after logs
 unsigned long timerStartMillis = 0;
 unsigned long lastTouchMillis = 0;
 unsigned long lastUpdateMillis = 0;
@@ -199,6 +200,9 @@ void drawWaitingScreen() {
   // Draw timer at 0:00:00 with whitespace above
   tft.setTextSize(4);
   tft.drawString("00:00:00", 160, 170);
+
+  // Draw logs button
+  drawLogsButton(COLOR_RED);
 }
 
 void drawLogsButton(uint16_t bgColor) {
@@ -309,27 +313,33 @@ void handleTouch() {
   Serial.printf("Touch at: %d, %d (raw: %d, %d)\n", touchX, touchY, p.x, p.y);
 
   if (currentState == VIEWING_LOGS) {
-    // Any touch returns to timer
-    Serial.println("Returning to timer from logs");
-    currentState = RUNNING;
+    // Any touch returns to previous state
+    Serial.println("Returning from logs");
+    currentState = stateBeforeLogs;
     lastBgColor = 0;  // Force full redraw
-    unsigned long elapsedSeconds = getElapsedSeconds();
-    int hours, minutes, seconds;
-    formatTime(elapsedSeconds, hours, minutes, seconds);
-    drawTimerDisplay(hours, minutes, seconds, getBackgroundColor(elapsedSeconds), true);
+
+    if (currentState == WAITING_TO_START) {
+      drawWaitingScreen();
+    } else {
+      unsigned long elapsedSeconds = getElapsedSeconds();
+      int hours, minutes, seconds;
+      formatTime(elapsedSeconds, hours, minutes, seconds);
+      drawTimerDisplay(hours, minutes, seconds, getBackgroundColor(elapsedSeconds), true);
+    }
     return;
   }
 
-  // Check if logs button was pressed (only when timer is running)
-  if (currentState == RUNNING && isTouchInLogsButton(touchX, touchY)) {
+  // Check if logs button was pressed (works from waiting or running state)
+  if ((currentState == RUNNING || currentState == WAITING_TO_START) && isTouchInLogsButton(touchX, touchY)) {
     Serial.println("Logs button pressed");
+    stateBeforeLogs = currentState;  // Remember where we came from
     currentState = VIEWING_LOGS;
     drawLogsScreen();
     return;
   }
 
   if (currentState == WAITING_TO_START) {
-    // First touch - start the timer
+    // First touch (not on logs button) - start the timer
     Serial.println("Timer started!");
     currentState = RUNNING;
     timerStartMillis = millis();
