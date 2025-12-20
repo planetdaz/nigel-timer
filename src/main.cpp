@@ -524,7 +524,7 @@ void handleTouch() {
 
     // Log the duration
     char logMessage[64];
-    snprintf(logMessage, sizeof(logMessage), "Duration: %02d:%02d:%02d", hours, minutes, seconds);
+    snprintf(logMessage, sizeof(logMessage), "-- Duration: %02d:%02d:%02d", hours, minutes, seconds);
     logEntry(logMessage);
 
     Serial.print("Timer reset! Previous duration: ");
