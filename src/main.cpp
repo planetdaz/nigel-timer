@@ -247,7 +247,7 @@ String getTimestamp() {
   }
 
   char timestamp[32];
-  strftime(timestamp, sizeof(timestamp), "%m/%d/%y %I:%M%p", &timeinfo);
+  strftime(timestamp, sizeof(timestamp), "%m/%d/%y %I:%M %p", &timeinfo);
   return String(timestamp);
 }
 
@@ -380,7 +380,9 @@ void drawLogsScreen() {
     int totalLines = 0;
 
     while (logFile.available()) {
-      lines[writeIdx] = logFile.readStringUntil('\n');
+      String line = logFile.readStringUntil('\n');
+      line.trim();  // Remove \r and whitespace
+      lines[writeIdx] = line;
       writeIdx = (writeIdx + 1) % MAX_DISPLAY;
       totalLines++;
     }
