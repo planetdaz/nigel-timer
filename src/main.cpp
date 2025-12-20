@@ -5,6 +5,8 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <time.h>
 
 // ===== PIN DEFINITIONS =====
 // Touch Controller Pins (separate SPI bus from LCD)
@@ -18,6 +20,15 @@
 #define TFT_BACKLIGHT 21
 
 // ===== CONFIGURATION =====
+// WiFi credentials - UPDATE THESE
+const char* WIFI_SSID = "Frontier5664";
+const char* WIFI_PASSWORD = "8854950591";
+
+// NTP settings
+const char* NTP_SERVER = "pool.ntp.org";
+const long GMT_OFFSET_SEC = -6 * 3600;  // CST (UTC-6) - adjust for your timezone
+const int DAYLIGHT_OFFSET_SEC = 0;      // Set to 3600 if DST is active
+
 // Color thresholds (in seconds)
 const int THRESHOLD_YELLOW = 12600;  // 3.5 hours (210 minutes)
 const int THRESHOLD_GREEN = 14400;   // 4 hours (240 minutes)
@@ -55,6 +66,8 @@ unsigned long lastTouchMillis = 0;
 unsigned long lastUpdateMillis = 0;
 int lastDisplayedSeconds = -1;
 uint16_t lastBgColor = COLOR_RED;
+bool wifiConnected = false;
+String lastClockStr = "";
 
 // Button area for logs (lower right corner)
 const int LOG_BTN_X = 250;
@@ -64,7 +77,11 @@ const int LOG_BTN_H = 40;
 
 // ===== FUNCTION DECLARATIONS =====
 void initializeFileSystem();
+void connectWiFi();
 void logEntry(const char* message);
+String getTimestamp();
+String getClockString();
+void drawClock(uint16_t bgColor);
 void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, bool forceFullRedraw = false);
 void drawWaitingScreen();
 void drawLogsButton(uint16_t bgColor);
@@ -93,6 +110,12 @@ void setup() {
   tft.fillScreen(COLOR_BLACK);
   Serial.println("Display initialized");
 
+  // Show connecting message
+  tft.setTextColor(COLOR_WHITE);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(2);
+  tft.drawString("Connecting to WiFi...", 160, 120);
+
   // Initialize touch SPI on custom pins
   touchSPI.begin(TOUCH_CLK, TOUCH_DO, TOUCH_DIN, TOUCH_CS);
   touch.begin(touchSPI);
@@ -101,6 +124,9 @@ void setup() {
 
   // Initialize filesystem
   initializeFileSystem();
+
+  // Connect to WiFi and sync time
+  connectWiFi();
 
   // Log boot entry
   logEntry("Boot");
@@ -167,26 +193,114 @@ void initializeFileSystem() {
   Serial.println("LittleFS mounted successfully");
 }
 
+void connectWiFi() {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\nWiFi connected!");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+
+    // Configure NTP
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+    Serial.println("NTP configured, waiting for time sync...");
+
+    // Wait for time to sync (up to 5 seconds)
+    struct tm timeinfo;
+    int syncAttempts = 0;
+    while (!getLocalTime(&timeinfo) && syncAttempts < 10) {
+      delay(500);
+      syncAttempts++;
+    }
+
+    if (getLocalTime(&timeinfo)) {
+      Serial.println("Time synchronized!");
+      Serial.printf("Current time: %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    } else {
+      Serial.println("Failed to sync time");
+    }
+  } else {
+    wifiConnected = false;
+    Serial.println("\nWiFi connection failed!");
+  }
+}
+
+String getTimestamp() {
+  if (!wifiConnected) {
+    return String(millis()) + "ms";
+  }
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return String(millis()) + "ms";
+  }
+
+  char timestamp[32];
+  strftime(timestamp, sizeof(timestamp), "%m/%d/%y %I:%M %p", &timeinfo);
+  return String(timestamp);
+}
+
+String getClockString() {
+  if (!wifiConnected) {
+    return "No WiFi";
+  }
+
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return "No Time";
+  }
+
+  char clockStr[16];
+  strftime(clockStr, sizeof(clockStr), "%I:%M%p", &timeinfo);
+  return String(clockStr);
+}
+
+void drawClock(uint16_t bgColor) {
+  // Draw clock in lower left corner
+  uint16_t textColor = (bgColor == COLOR_YELLOW) ? COLOR_BLACK : COLOR_WHITE;
+
+  // Clear clock area
+  tft.fillRect(0, 210, 100, 30, bgColor);
+
+  String clockStr = getClockString();
+  tft.setTextColor(textColor);
+  tft.setTextDatum(BL_DATUM);
+  tft.setTextSize(2);
+  tft.drawString(clockStr.c_str(), 5, 235);
+}
+
 void logEntry(const char* message) {
   fs::File logFile = LittleFS.open("/logs.txt", "a");
   if (!logFile) {
     Serial.println("ERROR: Failed to open log file!");
     return;
   }
-  
+
+  String timestamp = getTimestamp();
   char logLine[128];
-  unsigned long uptime = millis();
-  snprintf(logLine, sizeof(logLine), "%s at +%lums", message, uptime);
-  
+  snprintf(logLine, sizeof(logLine), "%s %s", timestamp.c_str(), message);
+
   logFile.println(logLine);
   logFile.close();
-  
+
   Serial.print("LOG: ");
   Serial.println(logLine);
 }
 
 void drawWaitingScreen() {
   tft.fillScreen(COLOR_RED);
+  lastBgColor = COLOR_RED;
 
   // Draw title at top
   tft.setTextColor(COLOR_WHITE);
@@ -202,6 +316,9 @@ void drawWaitingScreen() {
   // Draw timer at 0:00:00 with whitespace above
   tft.setTextSize(4);
   tft.drawString("00:00:00", 160, 170);
+
+  // Draw clock in lower left
+  drawClock(COLOR_RED);
 
   // Draw logs button
   drawLogsButton(COLOR_RED);
@@ -263,7 +380,9 @@ void drawLogsScreen() {
     int totalLines = 0;
 
     while (logFile.available()) {
-      lines[writeIdx] = logFile.readStringUntil('\n');
+      String line = logFile.readStringUntil('\n');
+      line.trim();  // Remove \r and whitespace
+      lines[writeIdx] = line;
       writeIdx = (writeIdx + 1) % MAX_DISPLAY;
       totalLines++;
     }
@@ -314,9 +433,20 @@ void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, boo
 
     // Draw logs button
     drawLogsButton(bgColor);
+
+    // Draw clock
+    drawClock(bgColor);
+    lastClockStr = getClockString();
   } else {
     // Just clear the timer area (approximate size of text)
     tft.fillRect(40, 130, 240, 50, bgColor);
+
+    // Update clock if minute changed
+    String currentClock = getClockString();
+    if (currentClock != lastClockStr) {
+      drawClock(bgColor);
+      lastClockStr = currentClock;
+    }
   }
 
   // Format time string
@@ -394,7 +524,7 @@ void handleTouch() {
 
     // Log the duration
     char logMessage[64];
-    snprintf(logMessage, sizeof(logMessage), "Duration: %02d:%02d:%02d", hours, minutes, seconds);
+    snprintf(logMessage, sizeof(logMessage), "-- Duration: %02d:%02d:%02d", hours, minutes, seconds);
     logEntry(logMessage);
 
     Serial.print("Timer reset! Previous duration: ");
