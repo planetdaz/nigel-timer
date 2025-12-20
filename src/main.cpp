@@ -44,25 +44,38 @@ Preferences preferences;
 // ===== STATE VARIABLES =====
 enum TimerState {
   WAITING_TO_START,
-  RUNNING
+  RUNNING,
+  VIEWING_LOGS
 };
 
 TimerState currentState = WAITING_TO_START;
+TimerState stateBeforeLogs = WAITING_TO_START;  // Track state to return to after logs
 unsigned long timerStartMillis = 0;
 unsigned long lastTouchMillis = 0;
 unsigned long lastUpdateMillis = 0;
 int lastDisplayedSeconds = -1;
 uint16_t lastBgColor = COLOR_RED;
 
+// Button area for logs (lower right corner)
+const int LOG_BTN_X = 250;
+const int LOG_BTN_Y = 200;
+const int LOG_BTN_W = 70;
+const int LOG_BTN_H = 40;
+
 // ===== FUNCTION DECLARATIONS =====
 void initializeFileSystem();
 void logEntry(const char* message);
 void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, bool forceFullRedraw = false);
 void drawWaitingScreen();
+void drawLogsButton(uint16_t bgColor);
+void drawLogsScreen();
+void clearLogs();
 void handleTouch();
 unsigned long getElapsedSeconds();
 uint16_t getBackgroundColor(unsigned long seconds);
 void formatTime(unsigned long seconds, int &hours, int &minutes, int &secs);
+bool isTouchInLogsButton(int x, int y);
+bool isTouchInClearButton(int x, int y);
 
 // ===== SETUP =====
 void setup() {
@@ -189,6 +202,99 @@ void drawWaitingScreen() {
   // Draw timer at 0:00:00 with whitespace above
   tft.setTextSize(4);
   tft.drawString("00:00:00", 160, 170);
+
+  // Draw logs button
+  drawLogsButton(COLOR_RED);
+}
+
+void drawLogsButton(uint16_t bgColor) {
+  // Draw a small "Logs" button in lower right corner
+  uint16_t btnColor = (bgColor == COLOR_YELLOW) ? COLOR_BLACK : COLOR_WHITE;
+  tft.drawRect(LOG_BTN_X, LOG_BTN_Y, LOG_BTN_W, LOG_BTN_H, btnColor);
+  tft.setTextColor(btnColor);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(1);
+  tft.drawString("LOGS", LOG_BTN_X + LOG_BTN_W/2, LOG_BTN_Y + LOG_BTN_H/2);
+}
+
+bool isTouchInLogsButton(int x, int y) {
+  return (x >= LOG_BTN_X && x <= LOG_BTN_X + LOG_BTN_W &&
+          y >= LOG_BTN_Y && y <= LOG_BTN_Y + LOG_BTN_H);
+}
+
+// Clear button area (lower left corner)
+const int CLEAR_BTN_X = 10;
+const int CLEAR_BTN_Y = 200;
+const int CLEAR_BTN_W = 70;
+const int CLEAR_BTN_H = 30;
+
+bool isTouchInClearButton(int x, int y) {
+  return (x >= CLEAR_BTN_X && x <= CLEAR_BTN_X + CLEAR_BTN_W &&
+          y >= CLEAR_BTN_Y && y <= CLEAR_BTN_Y + CLEAR_BTN_H);
+}
+
+void clearLogs() {
+  LittleFS.remove("/logs.txt");
+  Serial.println("Logs cleared!");
+}
+
+void drawLogsScreen() {
+  tft.fillScreen(COLOR_BLACK);
+
+  // Title
+  tft.setTextColor(COLOR_WHITE);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextSize(2);
+  tft.drawString("Recent Logs", 160, 10);
+
+  // Read and display logs (most recent first)
+  fs::File logFile = LittleFS.open("/logs.txt", "r");
+  if (!logFile) {
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("No logs found", 160, 120);
+    // Still draw clear button and footer
+  }
+
+  else {
+    // Read ALL lines, keeping only the last MAX_DISPLAY in a circular buffer
+    const int MAX_DISPLAY = 9;
+    String lines[MAX_DISPLAY];
+    int writeIdx = 0;
+    int totalLines = 0;
+
+    while (logFile.available()) {
+      lines[writeIdx] = logFile.readStringUntil('\n');
+      writeIdx = (writeIdx + 1) % MAX_DISPLAY;
+      totalLines++;
+    }
+    logFile.close();
+
+    // Display lines (most recent first)
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextSize(1);
+    int yPos = 40;
+    int numToShow = min(totalLines, MAX_DISPLAY);
+
+    // Start from most recent (one before writeIdx) and go backwards
+    for (int i = 0; i < numToShow; i++) {
+      int idx = (writeIdx - 1 - i + MAX_DISPLAY) % MAX_DISPLAY;
+      tft.drawString(lines[idx].c_str(), 10, yPos);
+      yPos += 18;
+    }
+  }
+
+  // Clear button (lower left)
+  tft.drawRect(CLEAR_BTN_X, CLEAR_BTN_Y, CLEAR_BTN_W, CLEAR_BTN_H, COLOR_RED);
+  tft.setTextColor(COLOR_RED);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(1);
+  tft.drawString("CLEAR", CLEAR_BTN_X + CLEAR_BTN_W/2, CLEAR_BTN_Y + CLEAR_BTN_H/2);
+
+  // Footer instruction
+  tft.setTextDatum(BC_DATUM);
+  tft.setTextSize(1);
+  tft.setTextColor(COLOR_YELLOW);
+  tft.drawString("Touch anywhere to return", 160, 235);
 }
 
 void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, bool forceFullRedraw) {
@@ -205,6 +311,9 @@ void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, boo
     tft.setTextDatum(TC_DATUM);  // Top center
     tft.setTextSize(3);
     tft.drawString("Nigel Timer!", 160, 20);
+
+    // Draw logs button
+    drawLogsButton(bgColor);
   } else {
     // Just clear the timer area (approximate size of text)
     tft.fillRect(40, 130, 240, 50, bgColor);
@@ -222,19 +331,63 @@ void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, boo
 }
 
 void handleTouch() {
+  // Get touch coordinates
+  TS_Point p = touch.getPoint();
+
+  // Map touch coordinates to screen (adjust based on rotation)
+  // XPT2046 returns values 0-4095, map to screen size 320x240
+  int touchX = map(p.x, 200, 3900, 0, 320);
+  int touchY = map(p.y, 200, 3900, 0, 240);
+
+  Serial.printf("Touch at: %d, %d (raw: %d, %d)\n", touchX, touchY, p.x, p.y);
+
+  if (currentState == VIEWING_LOGS) {
+    // Check if clear button was pressed
+    if (isTouchInClearButton(touchX, touchY)) {
+      Serial.println("Clear logs button pressed");
+      clearLogs();
+      drawLogsScreen();  // Redraw to show empty logs
+      return;
+    }
+
+    // Any other touch returns to previous state
+    Serial.println("Returning from logs");
+    currentState = stateBeforeLogs;
+    lastBgColor = 0;  // Force full redraw
+
+    if (currentState == WAITING_TO_START) {
+      drawWaitingScreen();
+    } else {
+      unsigned long elapsedSeconds = getElapsedSeconds();
+      int hours, minutes, seconds;
+      formatTime(elapsedSeconds, hours, minutes, seconds);
+      drawTimerDisplay(hours, minutes, seconds, getBackgroundColor(elapsedSeconds), true);
+    }
+    return;
+  }
+
+  // Check if logs button was pressed (works from waiting or running state)
+  if ((currentState == RUNNING || currentState == WAITING_TO_START) && isTouchInLogsButton(touchX, touchY)) {
+    Serial.println("Logs button pressed");
+    stateBeforeLogs = currentState;  // Remember where we came from
+    currentState = VIEWING_LOGS;
+    drawLogsScreen();
+    return;
+  }
+
   if (currentState == WAITING_TO_START) {
-    // First touch - start the timer
+    // First touch (not on logs button) - start the timer
     Serial.println("Timer started!");
     currentState = RUNNING;
     timerStartMillis = millis();
     lastUpdateMillis = millis();
     lastDisplayedSeconds = 0;
-    
+
     // Draw initial running display (force full redraw)
     drawTimerDisplay(0, 0, 0, COLOR_RED, true);
 
   } else if (currentState == RUNNING) {
-    // Subsequent touch - log duration and reset
+    // Subsequent touch (not on logs button) - log duration and reset
     unsigned long elapsedSeconds = getElapsedSeconds();
     int hours, minutes, seconds;
     formatTime(elapsedSeconds, hours, minutes, seconds);
