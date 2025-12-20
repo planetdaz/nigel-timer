@@ -69,11 +69,13 @@ void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, boo
 void drawWaitingScreen();
 void drawLogsButton(uint16_t bgColor);
 void drawLogsScreen();
+void clearLogs();
 void handleTouch();
 unsigned long getElapsedSeconds();
 uint16_t getBackgroundColor(unsigned long seconds);
 void formatTime(unsigned long seconds, int &hours, int &minutes, int &secs);
 bool isTouchInLogsButton(int x, int y);
+bool isTouchInClearButton(int x, int y);
 
 // ===== SETUP =====
 void setup() {
@@ -220,6 +222,22 @@ bool isTouchInLogsButton(int x, int y) {
           y >= LOG_BTN_Y && y <= LOG_BTN_Y + LOG_BTN_H);
 }
 
+// Clear button area (lower left corner)
+const int CLEAR_BTN_X = 10;
+const int CLEAR_BTN_Y = 200;
+const int CLEAR_BTN_W = 70;
+const int CLEAR_BTN_H = 30;
+
+bool isTouchInClearButton(int x, int y) {
+  return (x >= CLEAR_BTN_X && x <= CLEAR_BTN_X + CLEAR_BTN_W &&
+          y >= CLEAR_BTN_Y && y <= CLEAR_BTN_Y + CLEAR_BTN_H);
+}
+
+void clearLogs() {
+  LittleFS.remove("/logs.txt");
+  Serial.println("Logs cleared!");
+}
+
 void drawLogsScreen() {
   tft.fillScreen(COLOR_BLACK);
 
@@ -234,32 +252,45 @@ void drawLogsScreen() {
   if (!logFile) {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("No logs found", 160, 120);
-    return;
+    // Still draw clear button and footer
+    goto drawButtons;
   }
 
-  // Read all lines into array (we'll display last ones)
-  const int MAX_LINES = 20;
-  String lines[MAX_LINES];
-  int lineCount = 0;
+  {
+    // Read ALL lines, keeping only the last MAX_DISPLAY in a circular buffer
+    const int MAX_DISPLAY = 9;
+    String lines[MAX_DISPLAY];
+    int writeIdx = 0;
+    int totalLines = 0;
 
-  while (logFile.available() && lineCount < MAX_LINES) {
-    lines[lineCount] = logFile.readStringUntil('\n');
-    lineCount++;
+    while (logFile.available()) {
+      lines[writeIdx] = logFile.readStringUntil('\n');
+      writeIdx = (writeIdx + 1) % MAX_DISPLAY;
+      totalLines++;
+    }
+    logFile.close();
+
+    // Display lines (most recent first)
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextSize(1);
+    int yPos = 40;
+    int numToShow = min(totalLines, MAX_DISPLAY);
+
+    // Start from most recent (one before writeIdx) and go backwards
+    for (int i = 0; i < numToShow; i++) {
+      int idx = (writeIdx - 1 - i + MAX_DISPLAY) % MAX_DISPLAY;
+      tft.drawString(lines[idx].c_str(), 10, yPos);
+      yPos += 18;
+    }
   }
-  logFile.close();
 
-  // Display from most recent (bottom of file) going up
-  // Fit about 10 lines on screen at size 1
-  tft.setTextDatum(TL_DATUM);
+drawButtons:
+  // Clear button (lower left)
+  tft.drawRect(CLEAR_BTN_X, CLEAR_BTN_Y, CLEAR_BTN_W, CLEAR_BTN_H, COLOR_RED);
+  tft.setTextColor(COLOR_RED);
+  tft.setTextDatum(MC_DATUM);
   tft.setTextSize(1);
-  int yPos = 40;
-  int maxDisplayLines = 10;
-  int startIdx = (lineCount > maxDisplayLines) ? lineCount - maxDisplayLines : 0;
-
-  for (int i = lineCount - 1; i >= startIdx && yPos < 230; i--) {
-    tft.drawString(lines[i].c_str(), 10, yPos);
-    yPos += 18;
-  }
+  tft.drawString("CLEAR", CLEAR_BTN_X + CLEAR_BTN_W/2, CLEAR_BTN_Y + CLEAR_BTN_H/2);
 
   // Footer instruction
   tft.setTextDatum(BC_DATUM);
@@ -313,7 +344,15 @@ void handleTouch() {
   Serial.printf("Touch at: %d, %d (raw: %d, %d)\n", touchX, touchY, p.x, p.y);
 
   if (currentState == VIEWING_LOGS) {
-    // Any touch returns to previous state
+    // Check if clear button was pressed
+    if (isTouchInClearButton(touchX, touchY)) {
+      Serial.println("Clear logs button pressed");
+      clearLogs();
+      drawLogsScreen();  // Redraw to show empty logs
+      return;
+    }
+
+    // Any other touch returns to previous state
     Serial.println("Returning from logs");
     currentState = stateBeforeLogs;
     lastBgColor = 0;  // Force full redraw
