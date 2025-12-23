@@ -1,23 +1,52 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
-#include <XPT2046_Touchscreen.h>
 #include <FS.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <time.h>
 
-// ===== PIN DEFINITIONS =====
-// Touch Controller Pins (separate SPI bus from LCD)
-#define TOUCH_CS 33
-#define TOUCH_IRQ 36
-#define TOUCH_CLK 25
-#define TOUCH_DIN 32  // MOSI
-#define TOUCH_DO 39   // MISO
+// ===== BOARD-SPECIFIC CONFIGURATION =====
+#if defined(BOARD_CYD_RESISTIVE)
+  // ESP32-2432S028R (E32R28T) with XPT2046 Resistive Touch
+  // Touch uses SEPARATE SPI bus from display!
+  // Touch SPI: SCLK=25, MOSI=32, MISO=39, CS=33, IRQ=36
+  #include <XPT2046_Touchscreen.h>
+  
+  #define TOUCH_CS   33
+  #define TOUCH_IRQ  36
+  #define TOUCH_SCLK 25
+  #define TOUCH_MOSI 32
+  #define TOUCH_MISO 39
+  #define TFT_BACKLIGHT 21
+  #define BOARD_NAME "ESP32-2432S028R (Resistive)"
+  
+  // Touch calibration values (adjust for your specific board)
+  #define TOUCH_MIN_X 300
+  #define TOUCH_MAX_X 3900
+  #define TOUCH_MIN_Y 300
+  #define TOUCH_MAX_Y 3900
+  
+  // Create second SPI bus for touch
+  SPIClass touchSPI(HSPI);
+  XPT2046_Touchscreen ts(TOUCH_CS, TOUCH_IRQ);
 
-// Backlight
-#define TFT_BACKLIGHT 21
+#elif defined(BOARD_CYD_CAPACITIVE)
+  // JC2432W328C (Guition) with CST816S Capacitive Touch (I2C)
+  // Official pin config from: https://github.com/rzeldent/platformio-espressif32-sunton
+  #include <Wire.h>
+  #define TOUCH_SDA 33
+  #define TOUCH_SCL 32
+  #define TOUCH_INT 21   // Note: NOT 36!
+  #define TOUCH_RST 25
+  #define TFT_BACKLIGHT 27
+  #define CST816S_ADDR 0x15
+  #define BOARD_NAME "JC2432W328C (Capacitive)"
+
+#else
+  #error "No board defined! Use -DBOARD_CYD_RESISTIVE or -DBOARD_CYD_CAPACITIVE"
+#endif
 
 // ===== CONFIGURATION =====
 // WiFi credentials - UPDATE THESE
@@ -34,14 +63,10 @@ const int THRESHOLD_YELLOW = 12600;  // 3.5 hours (210 minutes)
 const int THRESHOLD_GREEN = 14400;   // 4 hours (240 minutes)
 
 // Touch debounce delay (in milliseconds)
-const unsigned long TOUCH_DEBOUNCE_MS = 1000;
+const unsigned long TOUCH_DEBOUNCE_MS = 500;  
 
 // ===== GLOBAL OBJECTS =====
 TFT_eSPI tft = TFT_eSPI();
-
-// Create separate SPI instance for touch controller
-SPIClass touchSPI(VSPI);
-XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
 
 Preferences preferences;
 
@@ -87,7 +112,8 @@ void drawWaitingScreen();
 void drawLogsButton(uint16_t bgColor);
 void drawLogsScreen();
 void clearLogs();
-void handleTouch();
+bool readTouch(int &screenX, int &screenY);
+void handleTouchAt(int touchX, int touchY);
 unsigned long getElapsedSeconds();
 uint16_t getBackgroundColor(unsigned long seconds);
 void formatTime(unsigned long seconds, int &hours, int &minutes, int &secs);
@@ -97,7 +123,11 @@ bool isTouchInClearButton(int x, int y);
 // ===== SETUP =====
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n\n========================================");
   Serial.println("Nigel's Potty Timer - Starting...");
+  Serial.println(BOARD_NAME);
+  Serial.println("========================================");
 
   // Initialize backlight pin and turn it on
   pinMode(TFT_BACKLIGHT, OUTPUT);
@@ -106,21 +136,72 @@ void setup() {
 
   // Initialize display
   tft.init();
-  tft.setRotation(1);  // Landscape mode (320x240)
+  tft.setRotation(1);
   tft.fillScreen(COLOR_BLACK);
-  Serial.println("Display initialized");
-
-  // Show connecting message
   tft.setTextColor(COLOR_WHITE);
   tft.setTextDatum(MC_DATUM);
   tft.setTextSize(2);
-  tft.drawString("Connecting to WiFi...", 160, 120);
+  Serial.println("Display initialized");
 
-  // Initialize touch SPI on custom pins
-  touchSPI.begin(TOUCH_CLK, TOUCH_DO, TOUCH_DIN, TOUCH_CS);
-  touch.begin(touchSPI);
-  touch.setRotation(1);  // Match display rotation
-  Serial.println("Touch initialized");
+  tft.drawString("Initializing touch...", 160, 120);
+
+  // ===== TOUCH CONTROLLER INITIALIZATION =====
+#if defined(BOARD_CYD_RESISTIVE)
+  // XPT2046 Resistive Touch - uses SEPARATE SPI bus from display
+  Serial.printf("Touch pins: CS=%d, IRQ=%d, SCLK=%d, MOSI=%d, MISO=%d\n", 
+                TOUCH_CS, TOUCH_IRQ, TOUCH_SCLK, TOUCH_MOSI, TOUCH_MISO);
+  
+  // Initialize the separate SPI bus for touch (HSPI)
+  touchSPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
+  ts.begin(touchSPI);
+  ts.setRotation(1);  // Match display rotation
+  Serial.println("XPT2046 touch controller initialized on HSPI");
+
+#elif defined(BOARD_CYD_CAPACITIVE)
+  // CST816S Capacitive Touch (I2C)
+  Serial.printf("Touch pins: SDA=%d, SCL=%d, RST=%d, INT=%d\n", 
+                TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
+  
+  // Configure RST pin and perform reset
+  pinMode(TOUCH_RST, OUTPUT);
+  digitalWrite(TOUCH_RST, LOW);
+  delay(20);
+  digitalWrite(TOUCH_RST, HIGH);
+  delay(100);  // Wait for CST816S to boot
+  Serial.println("Touch controller reset complete");
+
+  // Configure INT pin
+  pinMode(TOUCH_INT, INPUT);
+
+  // Initialize I2C for touch on correct pins (SDA=33, SCL=32)
+  Wire.begin(TOUCH_SDA, TOUCH_SCL);
+  delay(50);
+  
+  // Verify touch controller is present and read info
+  Wire.beginTransmission(CST816S_ADDR);
+  if (Wire.endTransmission() == 0) {
+    Serial.println("CST816S found at 0x15");
+    
+    // Read chip info
+    Wire.beginTransmission(CST816S_ADDR);
+    Wire.write(0xA7);  // Chip ID register
+    Wire.endTransmission(false);
+    Wire.requestFrom(CST816S_ADDR, 3);
+    if (Wire.available() >= 3) {
+      byte chipId = Wire.read();
+      byte projId = Wire.read();
+      byte fwVer = Wire.read();
+      Serial.printf("  Chip ID: 0x%02X, Project: %d, FW: %d\n", chipId, projId, fwVer);
+    }
+  } else {
+    Serial.println("WARNING: CST816S not found!");
+  }
+#endif
+
+  Serial.println("Touch controller ready");
+
+  tft.fillScreen(COLOR_BLACK);
+  tft.drawString("Connecting to WiFi...", 160, 120);
 
   // Initialize filesystem
   initializeFileSystem();
@@ -141,16 +222,86 @@ void setup() {
   Serial.println("Ready! Waiting for first touch...");
 }
 
+// ===== TOUCH READ FUNCTION =====
+bool readTouch(int &screenX, int &screenY) {
+#if defined(BOARD_CYD_RESISTIVE)
+  // XPT2046 Resistive Touch
+  if (ts.touched()) {
+    TS_Point p = ts.getPoint();
+    
+    // Map raw values to screen coordinates
+    screenX = map(p.x, TOUCH_MIN_X, TOUCH_MAX_X, 0, 320);
+    screenY = map(p.y, TOUCH_MIN_Y, TOUCH_MAX_Y, 0, 240);
+    
+    // Clamp to screen bounds
+    screenX = constrain(screenX, 0, 319);
+    screenY = constrain(screenY, 0, 239);
+    
+    return true;
+  }
+  return false;
+
+#elif defined(BOARD_CYD_CAPACITIVE)
+  // CST816S Capacitive Touch - Direct I2C register reads
+  Wire.beginTransmission(CST816S_ADDR);
+  Wire.write(0x02);  // Start at finger count register
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  
+  Wire.requestFrom(CST816S_ADDR, 5);
+  if (Wire.available() >= 5) {
+    uint8_t fingers = Wire.read();  // 0x02 - finger count
+    uint8_t xh = Wire.read();       // 0x03
+    uint8_t xl = Wire.read();       // 0x04
+    uint8_t yh = Wire.read();       // 0x05
+    uint8_t yl = Wire.read();       // 0x06
+    
+    if (fingers > 0) {
+      uint16_t rawX = ((xh & 0x0F) << 8) | xl;
+      uint16_t rawY = ((yh & 0x0F) << 8) | yl;
+      
+      // Map for landscape rotation (rotation=1)
+      screenX = rawY;
+      screenY = 240 - rawX;
+      
+      // Clamp to screen bounds
+      screenX = constrain(screenX, 0, 319);
+      screenY = constrain(screenY, 0, 239);
+      
+      return true;
+    }
+  }
+  return false;
+#endif
+}
+
 // ===== MAIN LOOP =====
 void loop() {
-  // Check for touch input
-  if (touch.tirqTouched() && touch.touched()) {
-    unsigned long currentMillis = millis();
+  // Poll touch at ~20Hz
+  static unsigned long lastTouchRead = 0;
+  static bool wasTouched = false;
+  
+  if (millis() - lastTouchRead > 50) {
+    lastTouchRead = millis();
     
-    // Debounce check
-    if (currentMillis - lastTouchMillis >= TOUCH_DEBOUNCE_MS) {
-      handleTouch();
-      lastTouchMillis = currentMillis;
+    int screenX, screenY;
+    
+    if (readTouch(screenX, screenY)) {
+      if (!wasTouched) {  // New touch started
+        wasTouched = true;
+        
+        Serial.printf("TOUCH: screen(%d,%d)\n", screenX, screenY);
+        
+        unsigned long currentMillis = millis();
+        if (currentMillis - lastTouchMillis >= TOUCH_DEBOUNCE_MS) {
+          // Process touch at (screenX, screenY)
+          handleTouchAt(screenX, screenY);
+          lastTouchMillis = currentMillis;
+        }
+      }
+    } else {
+      wasTouched = false;
     }
   }
   
@@ -461,15 +612,12 @@ void drawTimerDisplay(int hours, int minutes, int seconds, uint16_t bgColor, boo
 }
 
 void handleTouch() {
-  // Get touch coordinates
-  TS_Point p = touch.getPoint();
+  // Legacy function - no longer used with direct register reads
+  Serial.println("handleTouch() called - should use handleTouchAt() instead");
+}
 
-  // Map touch coordinates to screen (adjust based on rotation)
-  // XPT2046 returns values 0-4095, map to screen size 320x240
-  int touchX = map(p.x, 200, 3900, 0, 320);
-  int touchY = map(p.y, 200, 3900, 0, 240);
-
-  Serial.printf("Touch at: %d, %d (raw: %d, %d)\n", touchX, touchY, p.x, p.y);
+void handleTouchAt(int touchX, int touchY) {
+  Serial.printf("Processing touch at: %d, %d\n", touchX, touchY);
 
   if (currentState == VIEWING_LOGS) {
     // Check if clear button was pressed
