@@ -1,11 +1,20 @@
 #include <Arduino.h>
 #include <SPI.h>
+#include <Wire.h>  // Must be included early, before ESP8266Audio
 #include <TFT_eSPI.h>
 #include <FS.h>
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <time.h>
+
+// ESP8266Audio library for WAV playback
+#include "AudioFileSourcePROGMEM.h"
+#include "AudioGeneratorWAV.h"
+#include "AudioOutputI2S.h"
+
+// WAV file data in PROGMEM
+#include "happy-chimes.h"
 
 // ===== BOARD-SPECIFIC CONFIGURATION =====
 #if defined(BOARD_CYD_RESISTIVE)
@@ -21,6 +30,7 @@
   #define TOUCH_MISO 39
   #define TFT_BACKLIGHT 21
   #define BOARD_NAME "ESP32-2432S028R (Resistive)"
+  #define SPEAKER_EN_PIN 4  // Speaker amplifier enable (active LOW)
   
   // Touch calibration values (adjust for your specific board)
   #define TOUCH_MIN_X 300
@@ -35,7 +45,7 @@
 #elif defined(BOARD_CYD_CAPACITIVE)
   // JC2432W328C (Guition) with CST816S Capacitive Touch (I2C)
   // Official pin config from: https://github.com/rzeldent/platformio-espressif32-sunton
-  #include <Wire.h>
+  // Wire.h already included above
   #define TOUCH_SDA 33
   #define TOUCH_SCL 32
   #define TOUCH_INT 21   // Note: NOT 36!
@@ -43,6 +53,7 @@
   #define TFT_BACKLIGHT 27
   #define CST816S_ADDR 0x15
   #define BOARD_NAME "JC2432W328C (Capacitive)"
+  #define SPEAKER_EN_PIN 4  // Speaker amplifier enable (active LOW)
 
 #else
   #error "No board defined! Use -DBOARD_CYD_RESISTIVE or -DBOARD_CYD_CAPACITIVE"
@@ -60,7 +71,7 @@ const int DAYLIGHT_OFFSET_SEC = 0;      // Set to 3600 if DST is active
 
 // Color thresholds (in seconds)
 const int THRESHOLD_YELLOW = 12600;  // 3.5 hours (210 minutes)
-const int THRESHOLD_GREEN = 14400;   // 4 hours (240 minutes)
+const int THRESHOLD_BLUE = 14400;   // 4 hours (240 minutes)
 
 // Touch debounce delay (in milliseconds)
 const unsigned long TOUCH_DEBOUNCE_MS = 500;  
@@ -68,12 +79,20 @@ const unsigned long TOUCH_DEBOUNCE_MS = 500;
 // ===== GLOBAL OBJECTS =====
 TFT_eSPI tft = TFT_eSPI();
 
+// Audio objects for WAV playback
+AudioGeneratorWAV *wav = nullptr;
+AudioFileSourcePROGMEM *audioFile = nullptr;
+AudioOutputI2S *audioOut = nullptr;
+bool audioPlaying = false;
+bool chimePlayedThisSession = false;  // Track if chime already played for this timer session
+
 Preferences preferences;
 
 // ===== COLOR DEFINITIONS =====
 #define COLOR_RED     0xF800
 #define COLOR_YELLOW  0xFFE0
 #define COLOR_GREEN   0x07E0
+#define COLOR_BLUE    0x001F
 #define COLOR_WHITE   0xFFFF
 #define COLOR_BLACK   0x0000
 
@@ -103,6 +122,10 @@ const int LOG_BTN_H = 40;
 // ===== FUNCTION DECLARATIONS =====
 void initializeFileSystem();
 void connectWiFi();
+void initAudio();
+void playChime();
+void audioLoop();
+void reinitTouch();
 void logEntry(const char* message);
 String getTimestamp();
 String getClockString();
@@ -133,6 +156,9 @@ void setup() {
   pinMode(TFT_BACKLIGHT, OUTPUT);
   digitalWrite(TFT_BACKLIGHT, HIGH);
   Serial.println("Backlight ON");
+
+  // Initialize audio
+  initAudio();
 
   // Initialize display
   tft.init();
@@ -322,11 +348,21 @@ void loop() {
         uint16_t bgColor = getBackgroundColor(elapsedSeconds);
         drawTimerDisplay(hours, minutes, seconds, bgColor);
         lastDisplayedSeconds = elapsedSeconds;
+        
+        // Play chime when reaching green threshold (only once per timer session)
+        if (bgColor == COLOR_BLUE && !chimePlayedThisSession) {
+          Serial.println("Green threshold reached - playing chime!");
+          playChime();
+          chimePlayedThisSession = true;
+        }
       }
     }
   }
   
-  delay(50);  // Small delay to prevent tight loop
+  // Handle audio playback
+  audioLoop();
+
+  delay(1);  // Small delay to prevent tight loop
 }
 
 // ===== IMPLEMENTATION =====
@@ -496,9 +532,20 @@ const int CLEAR_BTN_Y = 200;
 const int CLEAR_BTN_W = 70;
 const int CLEAR_BTN_H = 30;
 
+// Test chime button area (lower right corner on logs screen)
+const int TEST_BTN_X = 240;
+const int TEST_BTN_Y = 200;
+const int TEST_BTN_W = 70;
+const int TEST_BTN_H = 30;
+
 bool isTouchInClearButton(int x, int y) {
   return (x >= CLEAR_BTN_X && x <= CLEAR_BTN_X + CLEAR_BTN_W &&
           y >= CLEAR_BTN_Y && y <= CLEAR_BTN_Y + CLEAR_BTN_H);
+}
+
+bool isTouchInTestButton(int x, int y) {
+  return (x >= TEST_BTN_X && x <= TEST_BTN_X + TEST_BTN_W &&
+          y >= TEST_BTN_Y && y <= TEST_BTN_Y + TEST_BTN_H);
 }
 
 void clearLogs() {
@@ -559,6 +606,13 @@ void drawLogsScreen() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextSize(1);
   tft.drawString("CLEAR", CLEAR_BTN_X + CLEAR_BTN_W/2, CLEAR_BTN_Y + CLEAR_BTN_H/2);
+
+  // Test chime button (lower right)
+  tft.drawRect(TEST_BTN_X, TEST_BTN_Y, TEST_BTN_W, TEST_BTN_H, COLOR_GREEN);
+  tft.setTextColor(COLOR_GREEN);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(1);
+  tft.drawString("TEST", TEST_BTN_X + TEST_BTN_W/2, TEST_BTN_Y + TEST_BTN_H/2);
 
   // Footer instruction
   tft.setTextDatum(BC_DATUM);
@@ -628,6 +682,13 @@ void handleTouchAt(int touchX, int touchY) {
       return;
     }
 
+    // Check if test chime button was pressed
+    if (isTouchInTestButton(touchX, touchY)) {
+      Serial.println("Test chime button pressed");
+      playChime();
+      return;  // Stay on logs screen
+    }
+
     // Any other touch returns to previous state
     Serial.println("Returning from logs");
     currentState = stateBeforeLogs;
@@ -660,6 +721,7 @@ void handleTouchAt(int touchX, int touchY) {
     timerStartMillis = millis();
     lastUpdateMillis = millis();
     lastDisplayedSeconds = 0;
+    chimePlayedThisSession = false;  // Reset chime flag for new timer session
 
     // Draw initial running display (force full redraw)
     drawTimerDisplay(0, 0, 0, COLOR_RED, true);
@@ -682,6 +744,7 @@ void handleTouchAt(int touchX, int touchY) {
     timerStartMillis = millis();
     lastUpdateMillis = millis();
     lastDisplayedSeconds = 0;
+    chimePlayedThisSession = false;  // Reset chime flag for new timer session
 
     // Redraw with red background (force full redraw)
     drawTimerDisplay(0, 0, 0, COLOR_RED, true);
@@ -698,10 +761,10 @@ unsigned long getElapsedSeconds() {
 uint16_t getBackgroundColor(unsigned long seconds) {
   if (seconds < THRESHOLD_YELLOW) {
     return COLOR_RED;
-  } else if (seconds < THRESHOLD_GREEN) {
+  } else if (seconds < THRESHOLD_BLUE) {
     return COLOR_YELLOW;
   } else {
-    return COLOR_GREEN;
+    return COLOR_BLUE;
   }
 }
 
@@ -709,4 +772,113 @@ void formatTime(unsigned long totalSeconds, int &hours, int &minutes, int &secs)
   hours = totalSeconds / 3600;
   minutes = (totalSeconds % 3600) / 60;
   secs = totalSeconds % 60;
+}
+
+// ===== AUDIO FUNCTIONS =====
+
+void initAudio() {
+  Serial.println("Initializing audio...");
+  
+  // Configure speaker enable pin and RGB LEDs
+  // On resistive board: GPIO 4 is speaker amplifier enable (active LOW) - must be LOW for audio
+  //                     RGB LED: R=22, G=16, B=17 (common anode - HIGH = off)
+  // On capacitive board: GPIO 4 is shared with red LED, G=16, B=17 (common anode - HIGH = off)
+  pinMode(SPEAKER_EN_PIN, OUTPUT);
+#if defined(BOARD_CYD_RESISTIVE)
+  digitalWrite(SPEAKER_EN_PIN, LOW);   // Enable speaker amplifier
+  Serial.println("Speaker amplifier enabled");
+  // Turn off RGB LED (resistive board: R=22, G=16, B=17)
+  pinMode(22, OUTPUT); digitalWrite(22, HIGH);
+  pinMode(16, OUTPUT); digitalWrite(16, HIGH);
+  pinMode(17, OUTPUT); digitalWrite(17, HIGH);
+  Serial.println("RGB LED disabled");
+#else
+  // Turn off RGB LED (capacitive board: R=4, G=16, B=17)
+  digitalWrite(SPEAKER_EN_PIN, HIGH);  // Turn off red LED (GPIO 4)
+  pinMode(16, OUTPUT); digitalWrite(16, HIGH);
+  pinMode(17, OUTPUT); digitalWrite(17, HIGH);
+  Serial.println("RGB LED disabled");
+#endif
+  
+  // Initialize audio output using ESP32 internal DAC
+  // Internal DAC uses GPIO25 (left) and GPIO26 (right)
+  // CYD boards have speaker connected to GPIO26
+  // Use mono mode to avoid GPIO25 conflict with touch SPI clock on resistive board
+  audioOut = new AudioOutputI2S(0, AudioOutputI2S::INTERNAL_DAC);
+  audioOut->SetOutputModeMono(true);  // Mono on GPIO26 only, avoids GPIO25 conflict
+  audioOut->SetGain(0.5);  // 50% volume (0.0 - 1.0)
+  
+  Serial.println("Audio I2S output initialized (internal DAC, mono on GPIO26)");
+}
+
+void playChime() {
+  Serial.println("Playing happy chimes...");
+  
+  // Stop any currently playing audio
+  if (wav != nullptr && wav->isRunning()) {
+    wav->stop();
+  }
+  
+  // Clean up previous audio file source
+  if (audioFile != nullptr) {
+    delete audioFile;
+    audioFile = nullptr;
+  }
+  
+  // Clean up previous WAV generator
+  if (wav != nullptr) {
+    delete wav;
+    wav = nullptr;
+  }
+  
+  // Create new file source from PROGMEM
+  audioFile = new AudioFileSourcePROGMEM(happyChimesWav, sizeof(happyChimesWav));
+  
+  // Create WAV generator and start playback
+  wav = new AudioGeneratorWAV();
+  if (!wav->begin(audioFile, audioOut)) {
+    Serial.println("ERROR: Could not start WAV playback");
+    delete wav;
+    wav = nullptr;
+    delete audioFile;
+    audioFile = nullptr;
+    return;
+  }
+  
+  audioPlaying = true;
+  Serial.printf("WAV playback started (size: %d bytes)\n", sizeof(happyChimesWav));
+}
+
+void audioLoop() {
+  // Handle audio playback - must be called frequently!
+  if (audioPlaying && wav != nullptr) {
+    if (wav->isRunning()) {
+      if (!wav->loop()) {
+        // Playback finished
+        wav->stop();
+        audioPlaying = false;
+        reinitTouch();  // Reinit touch after audio (I2S may have affected GPIO25)
+        Serial.println("WAV playback complete");
+      }
+    } else {
+      audioPlaying = false;
+      reinitTouch();  // Reinit touch after audio
+    }
+  }
+}
+
+// Reinitialize touch controller after audio playback
+// This is needed on the resistive board because I2S internal DAC uses GPIO25
+// which conflicts with the touch SPI clock
+void reinitTouch() {
+#if defined(BOARD_CYD_RESISTIVE)
+  // Reinitialize the HSPI bus for touch
+  touchSPI.end();
+  delay(10);
+  touchSPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
+  ts.begin(touchSPI);
+  ts.setRotation(1);
+  Serial.println("Touch controller reinitialized");
+#endif
+  // Capacitive touch uses I2C, no conflict with I2S DAC
 }

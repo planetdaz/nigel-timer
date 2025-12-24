@@ -37,6 +37,70 @@ This document describes the hardware differences between two "Cheap Yellow Displ
 - **ESP32-2432S028R**: GPIO 21
 - **JC2432W328C**: GPIO 27
 
+### 4. Speaker / Audio
+Both boards have a speaker connected to the ESP32's internal DAC on **GPIO 26**.
+
+- **ESP32-2432S028R**: Requires GPIO 4 set LOW to enable the speaker amplifier
+- **JC2432W328C**: Speaker works without GPIO 4 (that pin is just the red LED)
+
+---
+
+## Audio Configuration (ESP8266Audio Library)
+
+Both boards use the ESP32's internal DAC for audio output. Key configuration:
+
+```cpp
+#include "AudioGeneratorWAV.h"
+#include "AudioOutputI2S.h"
+#include "AudioFileSourcePROGMEM.h"  // or AudioFileSourceSD.h for SD card
+
+AudioOutputI2S *audioOut = new AudioOutputI2S(0, AudioOutputI2S::INTERNAL_DAC);
+audioOut->SetOutputModeMono(true);  // IMPORTANT: Use mono to avoid GPIO25 conflict
+audioOut->SetGain(0.5);  // 0.0 to 1.0
+```
+
+### Critical: GPIO25 Conflict on Resistive Board
+
+The ESP32's internal DAC uses:
+- **GPIO 25** for left channel
+- **GPIO 26** for right channel (speaker is here)
+
+On the ESP32-2432S028R, **GPIO 25 is also the touch SPI clock (SCLK)**! This causes the touch controller to stop working during audio playback.
+
+**Solutions:**
+1. Use mono mode: `audioOut->SetOutputModeMono(true)` - outputs only on GPIO26
+2. Reinitialize touch after audio playback:
+
+```cpp
+void reinitTouch() {
+#if defined(BOARD_CYD_RESISTIVE)
+  touchSPI.end();
+  delay(10);
+  touchSPI.begin(TOUCH_SCLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
+  ts.begin(touchSPI);
+  ts.setRotation(1);
+#endif
+}
+```
+
+### PlatformIO Library Dependency
+
+```ini
+lib_deps =
+    https://github.com/earlephilhower/ESP8266Audio.git#1.9.8
+```
+
+### Include Order
+
+`Wire.h` must be included **before** ESP8266Audio headers to avoid compilation errors:
+
+```cpp
+#include <Wire.h>  // Must be early!
+#include "AudioFileSourcePROGMEM.h"
+#include "AudioGeneratorWAV.h"
+#include "AudioOutputI2S.h"
+```
+
 ---
 
 ## Configuration for ESP32-2432S028R (Original CYD)
@@ -191,7 +255,7 @@ board_build.filesystem = littlefs
 #define TOUCH_SDA 33
 #define TOUCH_SCL 32
 #define TOUCH_RST 25
-#define TOUCH_INT 36  // Not used - polling instead
+#define TOUCH_INT 21  // Not used - polling instead
 
 // Backlight
 #define TFT_BACKLIGHT 27
@@ -273,23 +337,27 @@ The ESP32-2432S028R uses a **separate SPI bus** for touch (not shared with displ
 | SCLK / SCL | 25 | 32 |
 | MOSI | 32 | - |
 | MISO | 39 | - |
-| IRQ / INT | 36 | 36 |
+| IRQ / INT | 36 | 21 |
 | RST | - | 25 |
 
 ### Other Pins
 | Function | ESP32-2432S028R | JC2432W328C |
 |----------|-----------------|-------------|
 | Backlight | 21 | 27 |
-| RGB LED R | 22 (common anode) | 4 |
-| RGB LED G | 16 (common anode) | 16 |
-| RGB LED B | 17 (common anode) | 17 |
-| Speaker Enable | 4 | - |
+| RGB LED R | 22 (common anode) | 4 (common anode) |
+| RGB LED G | 16 (common anode) | 16 (common anode) |
+| RGB LED B | 17 (common anode) | 17 (common anode) |
+| Speaker Enable | 4 (active LOW) | N/A (not needed) |
 | Speaker DAC | 26 | 26 |
-| SD Card CS | 5 | - |
-| SD Card MOSI | 23 | - |
-| SD Card MISO | 19 | - |
-| SD Card SCLK | 18 | - |
+| SD Card CS | 5 | 5 |
+| SD Card MOSI | 23 | 23 |
+| SD Card MISO | 19 | 19 |
+| SD Card SCLK | 18 | 18 |
 | Battery ADC | 34 | - |
+
+> **Note:** On the ESP32-2432S028R, GPIO 4 is the speaker amplifier enable (must be LOW for audio). On the JC2432W328C, GPIO 4 is just the red LED - the speaker works without enabling this pin.
+
+> **Note:** All RGB LEDs are common anode, meaning HIGH = off, LOW = on.
 
 ---
 

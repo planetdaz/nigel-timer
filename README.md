@@ -57,7 +57,7 @@ The background color indicates time since last potty break:
 
 - 🔴 **Red:** 0-3.5 hours (too soon to go again)
 - 🟡 **Yellow:** 3.5-4 hours (borderline)
-- 🟢 **Green:** 4+ hours (definitely time to go)
+- � **Blue:** 4+ hours (definitely time to go) + chime plays!
 
 *Thresholds are configurable in code.*
 
@@ -94,12 +94,16 @@ const long GMT_OFFSET_SEC = -6 * 3600;  // Your timezone offset
 
 ```cpp
 const int THRESHOLD_YELLOW = 12600;  // 3.5 hours (seconds)
-const int THRESHOLD_GREEN = 14400;   // 4 hours (seconds)
+const int THRESHOLD_BLUE = 14400;    // 4 hours (seconds)
 ```
 
 ### Touch Debouncing
 
-Configurable debounce delay to prevent accidental double-touches (default: 1 second).
+Configurable debounce delay to prevent accidental double-touches (default: 500ms).
+
+### Audio
+
+A chime plays when the timer reaches the blue threshold (4+ hours). Uses ESP8266Audio library with ESP32 internal DAC on GPIO26.
 
 ## Development
 
@@ -113,6 +117,7 @@ Configurable debounce delay to prevent accidental double-touches (default: 1 sec
 
 - `bodmer/TFT_eSPI` - Display driver library
 - `paulstoffregen/XPT2046_Touchscreen` - Touch controller (resistive boards only)
+- `earlephilhower/ESP8266Audio` - WAV audio playback via internal DAC
 - Built-in ESP32 libraries: `LittleFS.h`, `Preferences.h`, `WiFi.h`
 
 ### Building
@@ -139,8 +144,8 @@ pio run -e cyd_capacitive --target upload
 
 - ⚙️ On-screen settings to configure thresholds
 - 📊 Statistics view (average duration, frequency patterns)
-- 🔊 Audio alerts via DAC (GPIO26) when green threshold reached
 - 🌙 Night mode (dimmed display after certain hours)
+- 🔊 Volume control for audio alerts
 
 ## Version
 
